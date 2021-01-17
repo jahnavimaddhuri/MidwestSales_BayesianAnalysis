@@ -1,0 +1,225 @@
+---
+title: "Midwest Sales Bayesian Data Analysis" 
+output: html_document
+---
+
+*Analysis conducted by: Arvind Kumar (ID:18274348) and Jahnavi Maddhuri (ID:19419918)*
+
+```{r}
+# load required libraries
+library(tidyverse)
+library(bayesrules)
+library(rstanarm)
+library(bayesplot)
+
+# load midwest data frame
+midwest <- read.csv("MidwestSales.txt", sep="")
+```
+
+
+# **1.) Hypothesis Testing**
+Conduct a hypothesis test for the proportion of houses with AC (Air Conditioning).
+
+$H_0: \pi \leq 0.8$  
+$H_A: \pi > 0.8$
+
+## Prior
+According to the US Energy of Information Administration, 87% of houses have some form of air conditioning as of 2009. We used this information in formulating our prior so as to ensure that the median of our chosen beta distribution is around 0.85.
+
+**Beta Distribution:** 
+
+  alpha = 17
+
+  beta = 3
+
+  $\pi \sim Beta(\alpha = 17, \beta = 3)$ 
+
+## Likelihood
+```{r}
+set.seed(84735) #set seed for ability to reproduce sampling
+
+# Creating data frame for 100 samples of midwest data + filtering
+#   for houses with ac
+midwest_sample = midwest %>% 
+  sample_n(100) 
+midwest_sample = midwest_sample %>% 
+  filter(ac == 1)
+nrow(midwest_sample) #count number of successes
+```
+**Sample Data Outcome (Likelihood):**
+
+  x = 82  
+  
+  n = 100
+
+## Posterior
+```{r}
+# Find posterior distribution based on prior + likelihood
+summarize_beta_binomial(alpha = 17, beta = 3, x = 82, n = 100)
+```
+
+**Posterior alpha and beta:**
+
+  p_alpha = 99  
+    
+  p_beta = 21
+    
+  $\pi|X \sim Beta(\alpha = 99, \beta = 21)$
+
+## Calculating Bayes Factor
+
+### PRIOR PLOT
+```{r}
+bayesrules::plot_beta(17,3)
+```
+
+### POSTERIOR PLOT
+```{r}
+plot_beta(99,21)
+```
+
+### Calculating Posterior Odds and Probability
+```{r}
+posterior_prob = pbeta(0.8, 99, 21, lower.tail = FALSE)
+```
+
+Posterior Odds = $\frac{P(H_A|x = 82)}{P(H_0|x = 82)}$
+```{r}
+posterior_odds = posterior_prob/(1-posterior_prob)
+posterior_odds
+```
+
+
+### Calculating Prior Odds and Probability
+```{r}
+prior_prob = pbeta(0.8, 17, 3, lower.tail = FALSE)
+prior_odds = prior_prob/(1-prior_prob)
+prior_odds
+```
+
+### Calculating Bayes' Factor
+```{r}
+bayes_factor = posterior_odds/prior_odds
+bayes_factor
+```
+
+
+**Conclusion:** Since our Bayes Factor is greater than one, this implies that the odds of the posterior are greater than the odds of the prior. Since the posterior probability is representative of the odds of the alternate hypothesis over the null hypothesis given the data, we reject the null hypothesis and support the claim that more than 80% of midwest houses have Air Conditioning installed.
+
+\newline
+\newline
+\newline
+
+# **2.) Credible Intervals**
+
+**Posterior Distribution**
+
+  p_alpha = 99
+
+  p_beta = 21
+  
+  $\pi|X \sim Beta(\alpha = 99, \beta = 21)$
+  
+### CONFIDENCE INTERVAL PLOT
+```{r}
+plot_beta_ci(99,21)
+```
+```{r}
+#Calculating the lower and upper bounds for the credible interval
+lower_bound = qbeta(.025, 100,20)
+upper_bound = qbeta(.975, 100, 20)
+lower_bound
+upper_bound
+```
+
+**Conclusion:** So, our 95% credible interval is (`r lower_bound`, `r upper_bound`).
+There is a 95% posterior probability that $\pi$ (proportion of houses in the Midwest with AC) is between 0.7619 and 0.8942.
+
+\newline
+\newline
+\newline
+
+# **3.) Predictive Modeling**
+
+## Midwest Data Sampling
+```{r}
+# Create a data frame of 522 samples
+midwest <- midwest %>% 
+  sample_n(522) 
+
+
+##separate data into test/train data frames
+midwest_train <- midwest %>% 
+  sample_frac(0.80)
+
+midwest_test <- midwest %>% 
+  anti_join(midwest_train, by = "sqft")
+```
+
+
+## Modeling
+```{r}
+# Create a model to predict Price based on Square Foot
+normal_model <- stan_glm(Price~sqft, 
+         data = midwest_train, 
+         family = gaussian,
+         chains = 4, iter = 5000*2)
+```
+# Plots on Model Parameters
+```{r}
+prior_summary(normal_model)
+
+mcmc_trace(normal_model) #trace plots for intercept, slope and sigma
+mcmc_dens_overlay(normal_model) #trace plots for intercept, slope and sigma
+
+
+# table manipulation for slope, intercept and sigma approximations
+normal_model_df <- as.array(normal_model) %>%
+  reshape2::melt() %>%
+  pivot_wider(names_from = parameters, values_from = value)
+
+#returns boundaries on the middle 80% of the model parameters
+posterior_interval(normal_model, prob = 0.80)
+
+#create approximations for the slope, intercept and sigma
+b1_mean <- mean(normal_model_df$sqft)
+b0_mean <- mean(normal_model_df$`(Intercept)`)
+sigma_mean <- mean(normal_model_df$sigma)
+```
+## Predictive Modeling
+```{r}
+# we chose to model on the mean sqft based on the midwest data collection
+average_sqft = mean(midwest$sqft)
+
+y_trend <- b0_mean + b1_mean * average_sqft
+
+rnorm(1, y_trend, sigma_mean) # sample from prediction distribution,
+
+# include y_trend and y_new in prediction data frame
+prediction <- normal_model_df %>%
+  mutate(y_trend = `(Intercept)` + sqft*average_sqft) %>%
+  mutate(y_new = rnorm(20000, y_trend, sigma))
+
+# plot prediction
+prediction %>%
+  ggplot() + aes(x = y_new) + geom_histogram()
+
+summary(prediction) #get summary statistics on prediction
+```
+
+## Regression Distribution Plot
+```{r}
+predictions <- posterior_predict(normal_model,
+                               newdata = midwest_test)
+
+ppc_intervals(midwest_test$Price,
+              yrep = predictions,
+              x = midwest_test$sqft,
+              prob = 0.5,
+              prob_outer = 0.95)
+
+bayesrules::prediction_summary(y = midwest_test$Price,
+                   yrep = predictions)
+```
+
+
